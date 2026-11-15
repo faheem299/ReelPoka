@@ -69,6 +69,9 @@ class Api {
   Future<Map<String, dynamic>> me() async =>
       await _call('GET', '/auth/me') as Map<String, dynamic>;
 
+  Future<void> setAvatar(String avatar) =>
+      _call('PUT', '/auth/me/avatar', body: {'avatar': avatar});
+
   // ---------- Sync ----------
 
   Future<void> syncToday(int reels, double distanceCm) => _call(
@@ -85,6 +88,9 @@ class Api {
 
   Future<List<dynamic>> friendsToday() async =>
       await _call('GET', '/friends/today') as List<dynamic>;
+  
+  Future<List<dynamic>> leaderboard() async => await _call(
+      'GET', '/leaderboard?day=${dateKey(DateTime.now())}') as List<dynamic>;
 
   Future<List<dynamic>> searchUsers(String q) async => await _call(
       'GET', '/friends/search?q=${Uri.encodeQueryComponent(q)}') as List<dynamic>;

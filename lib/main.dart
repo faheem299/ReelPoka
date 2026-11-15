@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'api.dart';
 import 'auth_page.dart';
+import 'friends_page.dart';
+import 'avatar.dart';
 const _channel = MethodChannel('reel_counter/native');
 
 TextStyle anton({
@@ -317,6 +319,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   double _distWeek = 0;
   double _distTotal = 0;
   Timer? _timer;
+  String _avatar = defaultAvatar;
 
     // ---- server sync ----
   String? _syncedDay;
@@ -325,12 +328,14 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   DateTime _lastSyncTry = DateTime.fromMillisecondsSinceEpoch(0);
   bool _syncing = false;
   bool _syncFailed = false;
+  
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _refresh(forceSync: true);
+    _loadMe();
     _timer = Timer.periodic(const Duration(seconds: 2), (_) => _refresh());
   }
 
@@ -405,6 +410,32 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       if (mounted && !_syncFailed) setState(() => _syncFailed = true);
     } finally {
       _syncing = false;
+    }
+  }
+
+  Future<void> _loadMe() async {
+    try {
+      final me = await Api.instance.me();
+      if (mounted) {
+        setState(() => _avatar = (me['avatar'] as String?) ?? defaultAvatar);
+      }
+    } on ApiException catch (e) {
+      debugPrint('me failed: $e');
+    }
+  }
+
+  Future<void> _changeAvatar() async {
+    final picked = await pickAvatar(context, _avatar);
+    if (picked == null || picked == _avatar) return;
+    final old = _avatar;
+    setState(() => _avatar = picked);
+    try {
+      await Api.instance.setAvatar(picked);
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() => _avatar = old);
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(e.message)));
     }
   }
 
@@ -624,6 +655,21 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       appBar: AppBar(
         title: Text(_caps('Reel Counter')),
         actions: [
+                    Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            child: GestureDetector(
+              onTap: _changeAvatar,
+              child: AvatarWidget(avatar: _avatar, radius: 16),
+            ),
+          ),
+            IconButton(
+            tooltip: 'Friends',
+            icon: const Icon(Icons.group_outlined),
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const FriendsPage()),
+            ),
+          ),
           IconButton(
             tooltip: 'Themes',
             icon: const Icon(Icons.palette_outlined),
