@@ -1,7 +1,8 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-
+import 'api.dart';
+import 'auth_page.dart';
 const _channel = MethodChannel('reel_counter/native');
 
 TextStyle anton({
@@ -239,7 +240,11 @@ final List<AppTheme> appThemes = [
 
 // ---------------- App ----------------
 
-void main() => runApp(const ReelCounterApp());
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Api.instance.load();
+  runApp(const ReelCounterApp());
+}
 
 class ReelCounterApp extends StatefulWidget {
   const ReelCounterApp({super.key});
@@ -282,7 +287,12 @@ class _ReelCounterAppState extends State<ReelCounterApp> {
       title: 'Reel Counter',
       debugShowCheckedModeBanner: false,
       theme: _theme.data,
-      home: HomePage(theme: _theme, onThemeChanged: _setTheme),
+            home: ValueListenableBuilder<bool>(
+        valueListenable: Api.instance.loggedIn,
+        builder: (_, loggedIn, __) => loggedIn
+            ? HomePage(theme: _theme, onThemeChanged: _setTheme)
+            : const AuthPage(),
+      ),
     );
   }
 }
@@ -308,11 +318,19 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   double _distTotal = 0;
   Timer? _timer;
 
+    // ---- server sync ----
+  String? _syncedDay;
+  int? _syncedCount;
+  double? _syncedDist;
+  DateTime _lastSyncTry = DateTime.fromMillisecondsSinceEpoch(0);
+  bool _syncing = false;
+  bool _syncFailed = false;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _refresh();
+    _refresh(forceSync: true);
     _timer = Timer.periodic(const Duration(seconds: 2), (_) => _refresh());
   }
 
@@ -325,10 +343,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) _refresh();
+    if (state == AppLifecycleState.resumed) _refresh(forceSync: true);
   }
 
-  Future<void> _refresh() async {
+  Future<void> _refresh({bool forceSync = false}) async {
     try {
       final count = await _channel.invokeMethod<int>('getTodayCount') ?? 0;
       final limit = await _channel.invokeMethod<int>('getLimit') ?? 50;
@@ -356,8 +374,37 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           _distTotal = (dist['total'] as num?)?.toDouble() ?? 0;
         }
       });
+      _sync(force: forceSync);
     } on PlatformException catch (e) {
       debugPrint('Native call failed: $e');
+    }
+  }
+  Future<void> _sync({bool force = false}) async {
+    if (_syncing) return;
+    final now = DateTime.now();
+    final day = dateKey(now);
+    final changed = _syncedDay != day ||
+        _syncedCount != _count ||
+        _syncedDist == null ||
+        (_distToday - _syncedDist!).abs() >= 100; // 1 m
+    if (!force && !changed) return;
+    if (!force && now.difference(_lastSyncTry).inSeconds < 20) return;
+
+    _syncing = true;
+    _lastSyncTry = now;
+    final count = _count;
+    final dist = _distToday;
+    try {
+      await Api.instance.syncToday(count, dist);
+      _syncedDay = day;
+      _syncedCount = count;
+      _syncedDist = dist;
+      if (mounted && _syncFailed) setState(() => _syncFailed = false);
+    } on ApiException catch (e) {
+      debugPrint('sync failed: $e');
+      if (mounted && !_syncFailed) setState(() => _syncFailed = true);
+    } finally {
+      _syncing = false;
     }
   }
 
@@ -582,6 +629,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             icon: const Icon(Icons.palette_outlined),
             onPressed: _pickTheme,
           ),
+          IconButton(
+            tooltip: 'Log out',
+            icon: const Icon(Icons.logout),
+            onPressed: () => Api.instance.logout(),
+          ),
         ],
       ),
       body: Container(
@@ -623,6 +675,14 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                 backgroundColor: trackColor,
               ),
             ],
+                        if (_syncFailed)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Center(
+                  child: Text("Can't reach the server. Friends see old numbers.",
+                      style: textTheme.bodySmall?.copyWith(color: cs.error)),
+                ),
+              ),
             if (reached)
               Padding(
                 padding: const EdgeInsets.only(top: 12),
