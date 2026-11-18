@@ -6,7 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 
-const baseUrl = 'http://192.168.0.70:8000'; 
+const baseUrl = 'http://192.168.0.51:8000'; 
 
 class ApiException implements Exception {
   final int status; // 0 = couldn't reach the server

@@ -1,7 +1,6 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'leaderboardpage.dart';
 import 'api.dart';
 import 'main.dart' show formatDistance;
 import 'avatar.dart';
@@ -17,6 +16,8 @@ class _FriendsPageState extends State<FriendsPage> {
   final _search = TextEditingController();
   List<dynamic> _friends = [];
   List<dynamic> _requests = [];
+  List<dynamic> _board = [];
+  static const _medals = ['🥇', '🥈', '🥉'];
   List<dynamic>? _results; // null = not searching
   bool _loaded = false;
   String? _error;
@@ -43,11 +44,13 @@ class _FriendsPageState extends State<FriendsPage> {
       final r = await Future.wait([
         Api.instance.friendsToday(),
         Api.instance.incomingRequests(),
+        Api.instance.leaderboard(),
       ]);
       if (!mounted) return;
       setState(() {
         _friends = r[0];
         _requests = r[1];
+        _board = r[2];
         _loaded = true;
         _error = null;
       });
@@ -140,6 +143,71 @@ class _FriendsPageState extends State<FriendsPage> {
     if (d.inHours < 24) return 'updated ${d.inHours} h ago';
     return 'updated ${d.inDays} d ago';
   }
+  // Medal for a friend who is in today's top 3, otherwise empty.
+  String _medal(int userId) {
+    for (final r in _board) {
+      if (r['id'] == userId &&
+          (r['reels'] as int) > 0 &&
+          (r['rank'] as int) <= 3) {
+        return '${_medals[(r['rank'] as int) - 1]} ';
+      }
+    }
+    return '';
+  }
+
+  Widget _topThree() {
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
+    // The board is sorted, so the first three with reels are the top three.
+    final top = _board.where((r) => (r['reels'] as int) > 0).take(3).toList();
+    if (top.isEmpty) return const SizedBox.shrink();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _label('Top 3 today'),
+        Card(
+          clipBehavior: Clip.antiAlias,
+          child: Column(
+            children: [
+              for (final r in top)
+                ListTile(
+                  tileColor: (r['is_me'] as bool) ? cs.primaryContainer : null,
+                  leading: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(_medals[(r['rank'] as int) - 1],
+                          style: const TextStyle(fontSize: 24)),
+                      const SizedBox(width: 8),
+                      AvatarWidget(avatar: r['avatar'] as String?),
+                    ],
+                  ),
+                  title: Text(
+                      '${r['username']}${(r['is_me'] as bool) ? ' (you)' : ''}'),
+                  subtitle: Text(
+                    (r['title'] as String?) ?? '',
+                    style: TextStyle(
+                        fontWeight: FontWeight.bold, color: cs.primary),
+                  ),
+                  trailing: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      Text('${r['reels']} reels',
+                          style: tt.titleMedium
+                              ?.copyWith(fontWeight: FontWeight.bold)),
+                      Text(
+                          '${formatDistance((r['distance_cm'] as num).toDouble())} scrolled',
+                          style: tt.bodySmall),
+                    ],
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
 
   Widget _label(String text) => Padding(
         padding: const EdgeInsets.fromLTRB(4, 20, 4, 6),
@@ -153,19 +221,7 @@ class _FriendsPageState extends State<FriendsPage> {
     final today = dateKey(DateTime.now());
 
     return Scaffold(
-            appBar: AppBar(
-        title: const Text('Friends'),
-        actions: [
-          IconButton(
-            tooltip: 'Leaderboard',
-            icon: const Icon(Icons.emoji_events_outlined),
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const LeaderboardPage()),
-            ),
-          ),
-        ],
-      ),
+            appBar: AppBar(title: const Text('Friends')),
       body: RefreshIndicator(
         onRefresh: _load,
         child: ListView(
@@ -234,6 +290,7 @@ class _FriendsPageState extends State<FriendsPage> {
               ],
 
               // ---- friends ----
+              if (_friends.isNotEmpty) _topThree(),
               _label('Friends'),
               if (!_loaded && _error == null)
                 const Padding(
@@ -257,7 +314,7 @@ class _FriendsPageState extends State<FriendsPage> {
                     child: ListTile(
                       onLongPress: () => _remove(f['id'] as int, name),
                       leading: AvatarWidget(avatar: f['avatar'] as String?),
-                      title: Text(name),
+                      title: Text('${_medal(f['id'] as int)}$name'),
                       subtitle: Text(_ago(f['updated_at'] as String?)),
                       trailing: Column(
                         mainAxisAlignment: MainAxisAlignment.center,

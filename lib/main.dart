@@ -5,6 +5,7 @@ import 'api.dart';
 import 'auth_page.dart';
 import 'friends_page.dart';
 import 'avatar.dart';
+import 'about_page.dart';
 const _channel = MethodChannel('reel_counter/native');
 
 TextStyle anton({
@@ -33,6 +34,28 @@ TextStyle grotesk({
       color: color,
     );
 
+TextStyle brush({double? fontSize, double? letterSpacing, Color? color}) =>
+    TextStyle(
+      fontFamily: 'PermanentMarker',
+      fontSize: fontSize,
+      letterSpacing: letterSpacing,
+      color: color,
+    );
+
+TextStyle wide({
+  double? fontSize,
+  FontWeight? fontWeight,
+  double? letterSpacing,
+  Color? color,
+}) =>
+    TextStyle(
+      fontFamily: 'Montserrat',
+      fontSize: fontSize,
+      fontWeight: fontWeight,
+      letterSpacing: letterSpacing,
+      color: color,
+    );
+
 // ---------------- Formatting ----------------
 
 String formatDistance(double cm) {
@@ -53,7 +76,7 @@ String formatDistanceShort(double cm) {
 
 // ---------------- Themes ----------------
 
-enum ThemeStyle { standard, cyber, forest }
+enum ThemeStyle { standard, cyber, forest, ocean }
 
 class AppTheme {
   final String id;
@@ -94,6 +117,14 @@ const _fLime = Color(0xFFE3EF26);
 const _fTeal = Color(0xFF076653);
 const _fDark = Color(0xFF0C342C);
 const _fDeep = Color(0xFF06231D);
+
+
+const _oIce = Color(0xFFC8F1FA);
+const _oSky = Color(0xFF8EDDEE);
+const _oCyan = Color(0xFF00B8D9);
+const _oBlue = Color(0xFF0077B6);
+const _oNavy = Color(0xFF02025E);
+const _oDeep = Color(0xFF010140);
 
 AppTheme _buildDefault() {
   final data = ThemeData(
@@ -234,10 +265,75 @@ AppTheme _buildForest() {
   );
 }
 
+
+
+AppTheme _buildOcean() {
+  const scheme = ColorScheme.dark(
+    primary: _oCyan,
+    onPrimary: _oDeep,
+    secondary: _oSky,
+    onSecondary: _oDeep,
+    tertiary: _oSky,
+    onTertiary: _oDeep,
+    surface: _oNavy,
+    onSurface: _oIce,
+    error: Color(0xFFFF8A9B),
+    onError: _oDeep,
+    primaryContainer: _oBlue,
+    onPrimaryContainer: _oIce,
+    errorContainer: Color(0xFF4A1230),
+    onErrorContainer: _oIce,
+  );
+  final base = ThemeData(
+    useMaterial3: true,
+    brightness: Brightness.dark,
+    colorScheme: scheme,
+    scaffoldBackgroundColor: _oDeep,
+  );
+  final data = base.copyWith(
+    textTheme: base.textTheme.apply(
+      fontFamily: 'Montserrat',
+      bodyColor: _oIce,
+      displayColor: _oIce,
+    ),
+    appBarTheme: AppBarTheme(
+      backgroundColor: Colors.transparent,
+      elevation: 0,
+      foregroundColor: _oSky,
+      titleTextStyle: brush(fontSize: 26, color: _oIce),
+    ),
+    filledButtonTheme: FilledButtonThemeData(
+      style: FilledButton.styleFrom(
+        backgroundColor: _oCyan,
+        foregroundColor: _oDeep,
+        shape: const StadiumBorder(),
+      ),
+    ),
+    outlinedButtonTheme: OutlinedButtonThemeData(
+      style: OutlinedButton.styleFrom(
+        foregroundColor: _oCyan,
+        side: BorderSide(color: _oCyan.withValues(alpha: 0.6), width: 1),
+        shape: const StadiumBorder(),
+      ),
+    ),
+  );
+  return AppTheme(
+    id: 'ocean',
+    label: 'Ocean Gradient',
+    data: data,
+    reelBar: _oCyan,
+    distBar: _oSky,
+    reelGradient: const [_oIce, _oCyan],
+    distGradient: const [_oSky, _oBlue],
+    style: ThemeStyle.ocean,
+  );
+}
+
 final List<AppTheme> appThemes = [
   _buildDefault(),
   _buildCyber(),
   _buildForest(),
+  _buildOcean(),
 ];
 
 // ---------------- App ----------------
@@ -550,6 +646,31 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           ),
           child: child,
         );
+
+      case ThemeStyle.ocean:
+        return Container(
+          padding: const EdgeInsets.all(18),
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [_oBlue, _oNavy],
+            ),
+            borderRadius: BorderRadius.circular(28),
+            border: Border.all(
+              color: _oSky.withValues(alpha: 0.35),
+              width: 1,
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.3),
+                blurRadius: 16,
+                offset: const Offset(0, 6),
+              ),
+            ],
+          ),
+          child: child,
+        );
     }
   }
 
@@ -568,6 +689,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         );
       case ThemeStyle.standard:
         return Text(text, style: Theme.of(context).textTheme.titleMedium);
+
+      case ThemeStyle.ocean:
+        return Text(text, style: brush(fontSize: 20, color: _oSky));
     }
   }
 
@@ -591,6 +715,16 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         );
       case ThemeStyle.standard:
         return null;
+
+
+      case ThemeStyle.ocean:
+        return const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [_oNavy, _oDeep],
+          ),
+        );
     }
   }
 
@@ -635,6 +769,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           fontWeight: FontWeight.bold,
           color: reached ? cs.error : null,
         ),
+
+
+      ThemeStyle.ocean => wide(
+          fontSize: 104,
+          fontWeight: FontWeight.w800,
+          color: reached ? cs.error : _oIce,
+        ),
     };
 
     final TextStyle? distStyle = switch (_style) {
@@ -643,12 +784,16 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           fontSize: 34, fontWeight: FontWeight.bold, color: t.distBar),
       ThemeStyle.standard => textTheme.headlineMedium
           ?.copyWith(fontWeight: FontWeight.bold, color: t.distBar),
+
+      ThemeStyle.ocean =>
+        wide(fontSize: 34, fontWeight: FontWeight.w800, color: t.distBar),
     };
 
     final Color? trackColor = switch (_style) {
       ThemeStyle.cyber => _cIndigo,
       ThemeStyle.forest => _fTeal.withValues(alpha: 0.5),
       ThemeStyle.standard => null,
+      ThemeStyle.ocean => _oBlue.withValues(alpha: 0.5),
     };
 
     return Scaffold(
@@ -832,6 +977,18 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                       ),
                     ),
                 ],
+              ),
+            ),
+
+            const SizedBox(height: 12),
+            Center(
+              child: TextButton.icon(
+                icon: const Icon(Icons.info_outline),
+                label: const Text('About the creator'),
+                onPressed: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const AboutPage()),
+                ),
               ),
             ),
           ],
