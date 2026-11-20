@@ -31,7 +31,7 @@ private class Profile(
     val pagerIds: List<String> = emptyList(), // PAGER: view ids that exist only on the reel screen
     val textCount: Int = 1,                   // PAGER: how many long texts go into the fingerprint
     val scrollFallback: Boolean = false,      // count on scroll if no fingerprint could be read
-    val header: String? = null                // LABELS: title text shown at the top of the reel screen
+    val header: String? = null                // LABELS/BROWSER/IN_APP: "Reels" title at the top
 )
 
 private class Inspect(
@@ -53,12 +53,28 @@ private val PROFILES = mapOf(
     YOUTUBE to Profile(Mode.PAGER, listOf(YT_PAGER_ID), 1),
     INSTAGRAM to Profile(Mode.PAGER, listOf(IG_PAGER_ID), 2, scrollFallback = true),
     FACEBOOK to Profile(Mode.LABELS, scrollFallback = true, header = "Reels"),
-    "com.android.chrome" to Profile(Mode.BROWSER),
-    "com.sec.android.app.sbrowser" to Profile(Mode.BROWSER),
-    MESSENGER to Profile(Mode.IN_APP)
+    "com.android.chrome" to Profile(Mode.BROWSER, scrollFallback = true, header = "Reels"),
+    "com.sec.android.app.sbrowser" to Profile(Mode.BROWSER, scrollFallback = true, header = "Reels"),
+    MESSENGER to Profile(Mode.IN_APP, scrollFallback = true, header = "Reels")
 )
 
 private val TARGET_PACKAGES = PROFILES.keys
+
+// Chat apps: scrolling here never counts as distance and never triggers the distance limit.
+private val MESSAGING_PACKAGES = setOf(
+    "com.whatsapp",
+    "com.whatsapp.w4b",
+    "org.telegram.messenger",
+    "org.telegram.messenger.web",
+    "org.thunderdog.challegram",
+    "com.google.android.apps.messaging",
+    "com.samsung.android.messaging"
+)
+
+// Parts of Instagram view ids that only exist on the DM screens.
+private val IG_CHAT_ID_PARTS = listOf(
+    "direct_thread", "row_thread", "thread_composer", "direct_inbox", "inbox_refreshable"
+)
 
 // Labels that belong to buttons and navigation, not to the reel itself.
 private val UI_LABEL_PARTS = listOf(
@@ -78,13 +94,23 @@ class ReelAccessibilityService : AccessibilityService() {
         const val LIMIT_KEY = "daily_limit"
         const val LIMIT_ENABLED_KEY = "limit_enabled"
         const val DEFAULT_LIMIT = 50
+        const val DIST_LIMIT_KEY = "dist_limit_m"
+        const val DIST_LIMIT_ENABLED_KEY = "dist_limit_enabled"
+        const val DEFAULT_DIST_LIMIT_M = 100
 
         private const val APP_DEBOUNCE_MS = 300L
         private const val BLOCK_THROTTLE_MS = 500L
+        private const val DIST_BLOCK_THROTTLE_MS = 1500L
         private const val CHECK_MS = 250L
         private const val MIN_GAP_MS = 700L
         private const val SEEN_WINDOW_MS = 8000L
         private const val FLUSH_MS = 2000L
+        private const val CONTEXT_CACHE_MS = 600L
+
+        // The "Reels" title sits near the top; web pages get a little more room
+        // because the browser's own bar pushes the page down.
+        private const val APP_HEADER_FRACTION = 0.2f
+        private const val WEB_HEADER_FRACTION = 0.3f
 
         private val REEL_URL_PARTS = listOf(
             "facebook.com/reel",
@@ -108,6 +134,7 @@ class ReelAccessibilityService : AccessibilityService() {
     private val handler = Handler(Looper.getMainLooper())
     private var blocking = false
     private var lastBlockAt = 0L
+    private var lastDistBlockAt = 0L
     private var lastDumpAt = 0L
     private val states = HashMap<String, AppState>()
 
@@ -116,14 +143,35 @@ class ReelAccessibilityService : AccessibilityService() {
     private var lastFlushAt = 0L
     private val lastScrollY = HashMap<String, Int>()
 
+    // Short-lived answers to "is this the chat part of the app?"
+    private val ctxCache = HashMap<String, Pair<Long, Boolean>>()
+
+    // Apps where scrolling must never close anything (system, phone, keyboards, launchers, us).
+    private val distExempt = setOf(
+        "com.android.systemui",
+        "com.android.settings",
+        "com.android.phone",
+        "com.android.incallui",
+        "com.android.dialer",
+        "com.google.android.dialer",
+        "com.samsung.android.dialer",
+        "com.samsung.android.incallui",
+        "com.android.emergency"
+    )
+
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
         val type = event.eventType
         val pkg = event.packageName?.toString() ?: return
 
-        // Scroll distance: every app except this one, and not while a reel is on screen.
-        if (type == AccessibilityEvent.TYPE_VIEW_SCROLLED && pkg != packageName) {
+        // Scroll distance and distance limit.
+        // Not for this app, not for chat screens. Distance is not recorded while a reel is on screen.
+        if (type == AccessibilityEvent.TYPE_VIEW_SCROLLED &&
+            pkg != packageName &&
+            countsForDistance(pkg)
+        ) {
             if (states[pkg]?.onReel != true) recordScroll(event, pkg)
+            checkDistanceLimit(pkg)
         }
 
         if (blocking) return
@@ -209,26 +257,51 @@ class ReelAccessibilityService : AccessibilityService() {
                     Inspect(true, signatureOf(visibleTexts(pager, 200), profile.textCount), false)
                 }
             }
-            Mode.BROWSER -> {
-                val url = findUrl(root, false)
-                val on = isReelUrl(url)
-                Inspect(on, if (on) url else null, url != null && !on)
-            }
-            Mode.IN_APP -> inspectInApp(root, now)
-            Mode.LABELS -> inspectLabels(profile, root, now)
+            Mode.BROWSER -> inspectBrowser(profile, root, now)
+            Mode.IN_APP -> inspectInApp(profile, root, now)
+            Mode.LABELS -> inspectLabels(profile, root, now, APP_HEADER_FRACTION)
         }
 
-    // Facebook app: the Reels screen has a big "Reels" title at the top.
+    // Chrome / Samsung Internet.
+    // A reel URL is enough. On Facebook, reels opened from the feed keep a normal
+    // URL, so there the page is recognised by its "Reels" header instead.
+    private fun inspectBrowser(profile: Profile, root: AccessibilityNodeInfo, now: Long): Inspect {
+        val url = findUrl(root, false)
+        return when {
+            isReelUrl(url) -> Inspect(true, url, false)
+            isFacebookUrl(url) -> inspectLabels(profile, root, now, WEB_HEADER_FRACTION)
+            else -> Inspect(false, null, url != null)
+        }
+    }
+
+    // Messenger: chats are never reels. Only its built-in browser (a WebView) can be
+    // a reel screen, either by a reel link or by the Facebook "Reels" header.
+    private fun inspectInApp(profile: Profile, root: AccessibilityNodeInfo, now: Long): Inspect {
+        if (findWebView(root) == null) return Inspect(false, null, true)
+        val url = findUrl(root, true)
+        if (url != null) return Inspect(true, url, false)
+        return inspectLabels(profile, root, now, WEB_HEADER_FRACTION)
+    }
+
+    // The Reels screen has a big "Reels" title at the top.
     // The reel is identified by the longest author/caption labels on screen.
-    private fun inspectLabels(profile: Profile, root: AccessibilityNodeInfo, now: Long): Inspect {
+    private fun inspectLabels(
+        profile: Profile,
+        root: AccessibilityNodeInfo,
+        now: Long,
+        topFraction: Float
+    ): Inspect {
         val header = profile.header ?: return Inspect(false, null, true)
         val screenH = resources.displayMetrics.heightPixels
         val labels = labelsWithTop(root, 400)
 
         val hasHeader = labels.any {
-            it.first.equals(header, ignoreCase = true) && it.second < screenH * 0.2f
+            it.first.equals(header, ignoreCase = true) && it.second < screenH * topFraction
         }
-        if (!hasHeader) return Inspect(false, null, true)
+        if (!hasHeader) {
+            dump("no Reels header", labels.map { "${it.first.take(30)}@${it.second}" }, now)
+            return Inspect(false, null, true)
+        }
 
         val body = labels.map { it.first }
             .filter { it.length >= 8 && !isUiLabel(it) }
@@ -237,26 +310,10 @@ class ReelAccessibilityService : AccessibilityService() {
             .take(2)
 
         if (body.isEmpty()) {
-            dump("fb labels", labels.map { it.first }, now)
+            dump("reels labels", labels.map { it.first }, now)
             return Inspect(true, null, false)
         }
         return Inspect(true, body.joinToString("|") { it.take(50) }, false)
-    }
-
-    // Messenger's built-in browser: use the reel link if it is visible,
-    // otherwise recognise a Reels page from its web content.
-    private fun inspectInApp(root: AccessibilityNodeInfo, now: Long): Inspect {
-        val url = findUrl(root, true)
-        if (url != null) return Inspect(true, url, false)
-
-        val web = findWebView(root) ?: return Inspect(false, null, true)
-        val texts = visibleTexts(web, 300)
-        val hint = texts.any { it.equals("reels", true) || it.equals("reel", true) }
-        if (!hint) {
-            dump("in-app web texts", texts, now)
-            return Inspect(false, null, true)
-        }
-        return Inspect(true, signatureOf(texts, 1), false)
     }
 
     // Fingerprint: channel handle (text starting with @) + the longest text(s).
@@ -316,6 +373,11 @@ class ReelAccessibilityService : AccessibilityService() {
     private fun isReelUrl(url: String?): Boolean =
         url != null && REEL_URL_PARTS.any { url.contains(it, ignoreCase = true) }
 
+    private fun isFacebookUrl(url: String?): Boolean =
+        url != null && (url.contains("facebook.com", ignoreCase = true) ||
+            url.contains("fb.com", ignoreCase = true) ||
+            url.contains("fb.watch", ignoreCase = true))
+
     // Browsers: the address bar (an EditText).
     // Loose mode (in-app browsers): any visible text that contains a reel link.
     private fun findUrl(root: AccessibilityNodeInfo, loose: Boolean): String? {
@@ -361,6 +423,58 @@ class ReelAccessibilityService : AccessibilityService() {
         if (now - lastDumpAt < 2000) return
         lastDumpAt = now
         Log.d(TAG, "$what: ${texts.take(14).map { it.take(60) }}")
+    }
+
+    // ---------- Where does scrolling count? ----------
+
+    private fun cached(key: String, compute: () -> Boolean): Boolean {
+        val now = System.currentTimeMillis()
+        val hit = ctxCache[key]
+        if (hit != null && now - hit.first < CONTEXT_CACHE_MS) return hit.second
+        val value = compute()
+        ctxCache[key] = now to value
+        return value
+    }
+
+    // Messenger counts only while its built-in browser (a WebView) is open.
+    private fun messengerBrowserOpen(): Boolean = cached(MESSENGER) {
+        val root = rootInActiveWindow
+        root != null && findWebView(root) != null
+    }
+
+    // Instagram DMs are recognised by their view ids.
+    private fun instagramChatOpen(): Boolean = cached(INSTAGRAM) {
+        val root = rootInActiveWindow ?: return@cached false
+        val queue = ArrayDeque<AccessibilityNodeInfo>()
+        queue.add(root)
+        var visited = 0
+        var found: String? = null
+        val ids = mutableListOf<String>()
+        while (queue.isNotEmpty() && visited < 300 && found == null) {
+            val node = queue.removeFirst()
+            visited++
+            val id = node.viewIdResourceName
+            if (id != null) {
+                if (ids.size < 14) ids.add(id.substringAfter(":id/"))
+                if (IG_CHAT_ID_PARTS.any { id.contains(it, ignoreCase = true) }) found = id
+            }
+            for (i in 0 until node.childCount) {
+                node.getChild(i)?.let { queue.add(it) }
+            }
+        }
+        if (found != null) {
+            Log.d(TAG, "IG chat screen: $found")
+        } else {
+            dump("ig ids", ids, System.currentTimeMillis())
+        }
+        found != null
+    }
+
+    private fun countsForDistance(pkg: String): Boolean = when {
+        pkg in MESSAGING_PACKAGES -> false
+        pkg == MESSENGER -> messengerBrowserOpen()
+        pkg == INSTAGRAM -> !instagramChatOpen()
+        else -> true
     }
 
     // ---------- Scroll distance ----------
@@ -414,7 +528,38 @@ class ReelAccessibilityService : AccessibilityService() {
         pendingCm = 0f
     }
 
-    // ---------- Blockade ----------
+    // ---------- Distance limit ----------
+
+    private fun isDistExempt(pkg: String): Boolean =
+        pkg == packageName ||
+            pkg in distExempt ||
+            pkg.contains("launcher", ignoreCase = true) ||
+            pkg.contains("inputmethod", ignoreCase = true) ||
+            pkg.contains("honeyboard", ignoreCase = true)
+
+    private fun checkDistanceLimit(pkg: String) {
+        if (isDistExempt(pkg)) return
+        val now = System.currentTimeMillis()
+        if (now - lastDistBlockAt < DIST_BLOCK_THROTTLE_MS) return
+
+        val prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        if (!prefs.getBoolean(DIST_LIMIT_ENABLED_KEY, false)) return
+        val limitCm = prefs.getInt(DIST_LIMIT_KEY, DEFAULT_DIST_LIMIT_M) * 100f
+        val usedCm = prefs.getFloat(todayDistKey(), 0f) + pendingCm
+        if (limitCm <= 0f || usedCm < limitCm) return
+
+        lastDistBlockAt = now
+        flushDistance(now)
+        Toast.makeText(
+            this,
+            "Scroll limit reached (${(usedCm / 100f).toInt()} m)",
+            Toast.LENGTH_SHORT
+        ).show()
+        Log.d(TAG, "Distance limit hit in $pkg")
+        performGlobalAction(GLOBAL_ACTION_HOME)
+    }
+
+    // ---------- Reel blockade ----------
 
     private fun block(count: Int, limit: Int) {
         if (blocking) return
